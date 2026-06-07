@@ -13,11 +13,34 @@ describe('formatPost', () => {
       importance: 5,
     })
     expect(html).toContain('A&lt;B &amp; C')
-    expect(html).toContain('<b>⚡️ 漏洞 &lt;script&gt; 警报</b>'.replace('⚡️ ', '') || true)
+    expect(html).toContain('<b>漏洞 &lt;script&gt; 警报</b>')
     expect(html).not.toContain('<script>')
     expect(html).toContain('⚡️')
     expect(html).toContain('#安全')
     expect(html).toContain('href="https://ex.com/a?x=1&amp;y=2"')
+  })
+  it('escapes double quotes so URLs cannot break the href attribute', () => {
+    expect(escapeHtml('a"b')).toBe('a&quot;b')
+    const html = formatPost({
+      category: 'tech', source: 's', titleZh: 't', summaryZh: '',
+      url: 'https://ex.com/a?q="x"', importance: 3,
+    })
+    expect(html).toContain('href="https://ex.com/a?q=&quot;x&quot;"')
+  })
+  it('falls back to plain text for non-http URLs', () => {
+    const html = formatPost({
+      category: 'tech', source: 's', titleZh: 't', summaryZh: '',
+      url: 'javascript:alert(1)', importance: 3,
+    })
+    expect(html).not.toContain('<a href')
+    expect(html).toContain('javascript:alert(1)')
+  })
+  it('caps title and summary length well below the 4096 message limit', () => {
+    const html = formatPost({
+      category: 'tech', source: 's', titleZh: 'x'.repeat(5000), summaryZh: 'y'.repeat(5000),
+      url: 'https://e.com', importance: 3,
+    })
+    expect(html.length).toBeLessThan(2000)
   })
   it('omits empty summary block and flash for normal importance', () => {
     const html = formatPost({

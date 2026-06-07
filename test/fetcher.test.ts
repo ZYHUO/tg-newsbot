@@ -50,4 +50,18 @@ describe('parseFeed', () => {
   it('returns [] on HTML garbage', () => {
     expect(parseFeed('<!DOCTYPE html><html><body>nope</body></html>')).toEqual([])
   })
+  it('keeps numeric titles/guids/links as strings (no number coercion)', () => {
+    const xml = `<?xml version="1.0"?><rss version="2.0"><channel>
+      <item><title>2024</title><link>https://ex.com/2024</link><guid>123456</guid></item>
+    </channel></rss>`
+    const items = parseFeed(xml)
+    expect(items[0].title).toBe('2024')
+    expect(items[0].url).toBe('https://ex.com/2024')
+  })
+  it('decodes numeric and double-escaped entities', () => {
+    const xml = `<?xml version="1.0"?><rss version="2.0"><channel>
+      <item><title>It&#8217;s here &amp;amp; now</title><link>https://ex.com/e</link></item>
+    </channel></rss>`
+    expect(parseFeed(xml)[0].title).toBe('It’s here & now')
+  })
 })

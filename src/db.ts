@@ -14,10 +14,11 @@ export interface ItemRow {
   title_norm: string
   published_at: number | null
   fetched_at: number
-  status: 'pending' | 'posted' | 'skipped' | 'seeded' | 'failed'
+  status: 'pending' | 'posting' | 'posted' | 'skipped' | 'seeded' | 'failed'
   summary_json: string | null
   posted_msg_id: number | null
   fail_count: number
+  next_retry_at: number | null
 }
 
 let db: Database.Database | null = null
@@ -42,7 +43,8 @@ export function getDb(path = config.dbPath): Database.Database {
       status TEXT NOT NULL DEFAULT 'pending',
       summary_json TEXT,
       posted_msg_id INTEGER,
-      fail_count INTEGER NOT NULL DEFAULT 0
+      fail_count INTEGER NOT NULL DEFAULT 0,
+      next_retry_at INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_items_status ON items(status);
     CREATE INDEX IF NOT EXISTS idx_items_fetched ON items(fetched_at);
@@ -55,8 +57,26 @@ export function getDb(path = config.dbPath): Database.Database {
       fail_count INTEGER NOT NULL DEFAULT 0,
       seeded INTEGER NOT NULL DEFAULT 0
     );
+    CREATE TABLE IF NOT EXISTS meta (
+      k TEXT PRIMARY KEY,
+      v TEXT NOT NULL
+    );
   `)
+  // poor-man migrations for DBs created before a column existed
+  const itemCols = new Set(
+    (db.prepare(`PRAGMA table_info(items)`).all() as { name: string }[]).map(c => c.name),
+  )
+  if (!itemCols.has('next_retry_at')) db.exec(`ALTER TABLE items ADD COLUMN next_retry_at INTEGER`)
   return db
+}
+
+export function metaGet(db: Database.Database, k: string): string | null {
+  const row = db.prepare('SELECT v FROM meta WHERE k = ?').get(k) as { v: string } | undefined
+  return row?.v ?? null
+}
+
+export function metaSet(db: Database.Database, k: string, v: string): void {
+  db.prepare('INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v').run(k, v)
 }
 
 /** test helper */

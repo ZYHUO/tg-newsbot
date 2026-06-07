@@ -39,6 +39,9 @@ const parser = new XMLParser({
   // entity-heavy feeds (e.g. simonwillison.net) trip the expansion guard;
   // we decode the common entities ourselves in stripHtml instead
   processEntities: false,
+  // never coerce <guid>123456</guid> / <title>2024</title> into JS numbers
+  parseTagValue: false,
+  parseAttributeValue: false,
 })
 
 function asArray<T>(v: T | T[] | undefined): T[] {

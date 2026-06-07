@@ -14,10 +14,12 @@ export function canonicalUrl(raw: string): string {
     for (const k of [...u.searchParams.keys()]) {
       if (drop.has(k.toLowerCase())) u.searchParams.delete(k)
     }
+    u.searchParams.sort() // ?a=1&b=2 ≡ ?b=2&a=1
     u.hash = ''
     u.hostname = u.hostname.toLowerCase().replace(/^www\./, '')
+    u.pathname = u.pathname.replace(/\/{2,}/g, '/')
     let s = u.toString().replace(/^https?:\/\//, '')
-    if (s.endsWith('/')) s = s.slice(0, -1)
+    s = s.replace(/\/+$/, '').replace(/\/+\?/, '?')
     return s
   } catch {
     return raw.trim()
@@ -72,6 +74,16 @@ export function titleSimilarity(normA: string, normB: string): number {
 /** Same story from two sources if titles are this similar. */
 export const TITLE_DUP_THRESHOLD = 0.6
 
+/**
+ * Short/templated titles ("苹果发布会" vs "苹果发布会前瞻") produce jaccard
+ * false positives — require a minimum token mass on BOTH sides before
+ * trusting fuzzy matching; short titles fall back to URL-only dedup.
+ */
+const MIN_FUZZY_TOKENS = 5
+
 export function isFuzzyDuplicate(normTitle: string, recentNormTitles: string[]): boolean {
-  return recentNormTitles.some(t => titleSimilarity(normTitle, t) >= TITLE_DUP_THRESHOLD)
+  if (tokens(normTitle).size < MIN_FUZZY_TOKENS) return false
+  return recentNormTitles.some(t =>
+    tokens(t).size >= MIN_FUZZY_TOKENS && titleSimilarity(normTitle, t) >= TITLE_DUP_THRESHOLD,
+  )
 }

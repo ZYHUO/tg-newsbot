@@ -13,6 +13,13 @@ describe('canonicalUrl', () => {
   it('same canonical → same hash', () => {
     expect(urlHash('https://www.example.com/x?fbclid=111')).toBe(urlHash('http://example.com/x'))
   })
+  it('normalizes query param order', () => {
+    expect(canonicalUrl('https://ex.com/a?b=1&c=2')).toBe(canonicalUrl('https://ex.com/a?c=2&b=1'))
+  })
+  it('collapses internal double slashes and all trailing slashes', () => {
+    expect(canonicalUrl('https://ex.com/a//b///')).toBe('ex.com/a/b')
+    expect(canonicalUrl('https://ex.com/a//')).toBe(canonicalUrl('https://ex.com/a'))
+  })
 })
 
 describe('titleSimilarity', () => {
@@ -38,5 +45,12 @@ describe('titleSimilarity', () => {
     ]
     expect(isFuzzyDuplicate(normalizeTitle('Critical RCE Vulnerability Found in Apache Struts!'), recents)).toBe(true)
     expect(isFuzzyDuplicate(normalizeTitle('Ethereum upgrade ships on mainnet'), recents)).toBe(false)
+  })
+  it('short/templated titles never fuzzy-match (URL dedup only)', () => {
+    // "苹果发布会" vs "苹果发布会前瞻" are DIFFERENT stories — jaccard would
+    // wrongly flag them, so short titles must bypass fuzzy matching entirely
+    expect(isFuzzyDuplicate(normalizeTitle('苹果发布会前瞻'), [normalizeTitle('苹果发布会')])).toBe(false)
+    expect(isFuzzyDuplicate(normalizeTitle('苹果发布会'), [normalizeTitle('苹果发布会前瞻')])).toBe(false)
+    expect(isFuzzyDuplicate(normalizeTitle('Weekly news roundup June'), [normalizeTitle('Weekly news roundup')])).toBe(false)
   })
 })
