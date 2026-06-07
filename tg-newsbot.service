@@ -1,0 +1,17 @@
+[Unit]
+Description=Telegram news channel bot (RSS -> LLM summary -> channel)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/tg-newsbot
+ExecStart=/usr/bin/node /root/tg-newsbot/dist/index.js
+Restart=always
+RestartSec=15
+Environment=NODE_ENV=production
+# memory guard
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

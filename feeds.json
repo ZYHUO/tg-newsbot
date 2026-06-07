@@ -1,0 +1,45 @@
+[
+  { "url": "https://openai.com/news/rss.xml", "category": "ai_llm", "name": "OpenAI", "lang": "en" },
+  { "url": "https://blog.google/technology/ai/rss/", "category": "ai_llm", "name": "Google AI", "lang": "en", "intervalSec": 1800 },
+  { "url": "https://deepmind.google/blog/rss.xml", "category": "ai_llm", "name": "DeepMind", "lang": "en", "intervalSec": 1800 },
+  { "url": "https://huggingface.co/blog/feed.xml", "category": "ai_llm", "name": "HuggingFace", "lang": "en" },
+  { "url": "https://simonwillison.net/atom/everything/", "category": "ai_llm", "name": "Simon Willison", "lang": "en" },
+  { "url": "https://www.qbitai.com/feed", "category": "ai_llm", "name": "量子位", "lang": "zh" },
+  { "url": "https://www.technologyreview.com/feed/", "category": "ai_llm", "name": "MIT 科技评论", "lang": "en" },
+  { "url": "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml", "category": "ai_llm", "name": "The Verge AI", "lang": "en" },
+
+  { "url": "https://hnrss.org/frontpage?points=150", "category": "tech", "name": "Hacker News", "lang": "en" },
+  { "url": "https://techcrunch.com/feed/", "category": "tech", "name": "TechCrunch", "lang": "en" },
+  { "url": "https://feeds.arstechnica.com/arstechnica/index", "category": "tech", "name": "Ars Technica", "lang": "en" },
+  { "url": "https://www.solidot.org/index.rss", "category": "tech", "name": "Solidot", "lang": "zh" },
+  { "url": "https://sspai.com/feed", "category": "tech", "name": "少数派", "lang": "zh" },
+  { "url": "https://www.theverge.com/rss/index.xml", "category": "tech", "name": "The Verge", "lang": "en", "disabled": true },
+  { "url": "https://36kr.com/feed", "category": "tech", "name": "36氪", "lang": "zh", "disabled": true },
+  { "url": "https://www.cnbeta.com.tw/backend.php", "category": "tech", "name": "cnBeta", "lang": "zh", "disabled": true },
+  { "url": "https://www.v2ex.com/index.xml", "category": "tech", "name": "V2EX", "lang": "zh", "disabled": true },
+
+  { "url": "https://feeds.bbci.co.uk/news/world/rss.xml", "category": "world", "name": "BBC World", "lang": "en" },
+  { "url": "https://rss.dw.com/rdf/rss-chi-all", "category": "world", "name": "德国之声中文", "lang": "zh" },
+  { "url": "https://plink.anyfeeder.com/zaobao/realtime/world", "category": "world", "name": "联合早报", "lang": "zh", "disabled": true },
+  { "url": "https://rss.nytimes.com/services/xml/rss/nyt/World.xml", "category": "world", "name": "NYT World", "lang": "en", "disabled": true },
+  { "url": "https://www.aljazeera.com/xml/rss/all.xml", "category": "world", "name": "半岛电视台", "lang": "en", "disabled": true },
+  { "url": "https://news.google.com/rss?hl=zh-CN&gl=CN&ceid=CN:zh-Hans", "category": "world", "name": "Google 新闻", "lang": "zh", "disabled": true },
+
+  { "url": "https://feeds.feedburner.com/TheHackersNews", "category": "security", "name": "The Hacker News", "lang": "en" },
+  { "url": "https://www.bleepingcomputer.com/feed/", "category": "security", "name": "BleepingComputer", "lang": "en" },
+  { "url": "https://krebsonsecurity.com/feed/", "category": "security", "name": "Krebs on Security", "lang": "en", "intervalSec": 1800 },
+  { "url": "https://www.schneier.com/feed/atom/", "category": "security", "name": "Schneier", "lang": "en", "intervalSec": 1800 },
+  { "url": "https://api.anquanke.com/data/v1/rss", "category": "security", "name": "安全客", "lang": "zh", "needsProxy": true, "intervalSec": 1800 },
+
+  { "url": "https://www.coindesk.com/arc/outboundfeeds/rss/", "category": "crypto", "name": "CoinDesk", "lang": "en" },
+  { "url": "https://www.panewslab.com/rss.xml?lang=zh&type=NEWS", "category": "crypto", "name": "PANews", "lang": "zh" },
+  { "url": "https://www.theblock.co/rss.xml", "category": "crypto", "name": "The Block", "lang": "en", "disabled": true },
+  { "url": "https://cointelegraph.com/rss", "category": "crypto", "name": "Cointelegraph", "lang": "en", "disabled": true },
+  { "url": "https://decrypt.co/feed", "category": "crypto", "name": "Decrypt", "lang": "en", "disabled": true },
+
+  { "url": "https://github.blog/feed/", "category": "opensource_dev", "name": "GitHub Blog", "lang": "en", "intervalSec": 1800 },
+  { "url": "https://www.ruanyifeng.com/blog/atom.xml", "category": "opensource_dev", "name": "阮一峰", "lang": "zh", "intervalSec": 1800 },
+  { "url": "https://rsshub.rssforever.com/github/trending/daily/any", "category": "opensource_dev", "name": "GitHub Trending", "lang": "en", "intervalSec": 3600, "disabled": true },
+  { "url": "https://changelog.com/feed", "category": "opensource_dev", "name": "Changelog", "lang": "en", "intervalSec": 3600, "disabled": true },
+  { "url": "https://dev.to/feed", "category": "opensource_dev", "name": "DEV Community", "lang": "en", "disabled": true }
+]
