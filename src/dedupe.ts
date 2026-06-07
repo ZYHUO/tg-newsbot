@@ -75,15 +75,26 @@ export function titleSimilarity(normA: string, normB: string): number {
 export const TITLE_DUP_THRESHOLD = 0.6
 
 /**
- * Short/templated titles ("苹果发布会" vs "苹果发布会前瞻") produce jaccard
- * false positives — require a minimum token mass on BOTH sides before
- * trusting fuzzy matching; short titles fall back to URL-only dedup.
+ * Short/templated titles ("苹果发布会" vs "苹果发布会前瞻") lack the token
+ * mass for reliable fuzzy matching at 0.6 — but skipping them entirely would
+ * let identical short headlines from two sources double-post. Compromise:
+ * short titles still match, but only at near-identity.
  */
 const MIN_FUZZY_TOKENS = 5
+const SHORT_TITLE_THRESHOLD = 0.9
 
 export function isFuzzyDuplicate(normTitle: string, recentNormTitles: string[]): boolean {
-  if (tokens(normTitle).size < MIN_FUZZY_TOKENS) return false
-  return recentNormTitles.some(t =>
-    tokens(t).size >= MIN_FUZZY_TOKENS && titleSimilarity(normTitle, t) >= TITLE_DUP_THRESHOLD,
-  )
+  const a = tokens(normTitle)
+  if (a.size === 0) return false
+  return recentNormTitles.some(t => {
+    const b = tokens(t)
+    if (b.size === 0) return false
+    let inter = 0
+    for (const x of a) if (b.has(x)) inter++
+    const jaccard = inter / (a.size + b.size - inter)
+    const threshold = a.size < MIN_FUZZY_TOKENS || b.size < MIN_FUZZY_TOKENS
+      ? SHORT_TITLE_THRESHOLD
+      : TITLE_DUP_THRESHOLD
+    return jaccard >= threshold
+  })
 }

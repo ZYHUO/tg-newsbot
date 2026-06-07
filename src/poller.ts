@@ -101,8 +101,10 @@ export function retentionSweep(db: Database.Database): void {
   if (metaGet(db, 'last_retention_day') === today) return
   metaSet(db, 'last_retention_day', today)
   const cutoff = Date.now() - 30 * 24 * 3600 * 1000
+  // keep 'posted' rows forever: their url_hash is what stops a feed that
+  // resurfaces an old URL from re-posting it (~90 rows/day, negligible)
   const n = db.prepare(
-    `DELETE FROM items WHERE fetched_at < ? AND status != 'pending'`,
+    `DELETE FROM items WHERE fetched_at < ? AND status NOT IN ('pending', 'posting', 'posted')`,
   ).run(cutoff).changes
   db.pragma('wal_checkpoint(TRUNCATE)')
   if (n > 0) log(`retention: deleted ${n} rows older than 30d`)
@@ -167,8 +169,11 @@ export async function publishPending(db: Database.Database): Promise<void> {
     ).run(item.id).changes
     if (claimed !== 1) continue
 
+    // SEND failure domain: only errors thrown by sendToChannel may re-queue
+    // the item — anything after a successful send must never revert it.
+    let msgId: number
     try {
-      const msgId = await sendToChannel(formatPost({
+      msgId = await sendToChannel(formatPost({
         category: item.category,
         source: item.source_name,
         titleZh: s.titleZh,
@@ -176,23 +181,38 @@ export async function publishPending(db: Database.Database): Promise<void> {
         url: item.url,
         importance: s.importance,
       }))
-      db.prepare(`UPDATE items SET status = 'posted', posted_msg_id = ?, summary_json = ? WHERE id = ?`)
-        .run(msgId, JSON.stringify(s), item.id)
-      posted++
-      log(`posted #${item.id} [${item.category}] ${s.titleZh.slice(0, 60)}`)
     } catch (err) {
       const maybeSent = err instanceof SendError && err.maybeSent
       log(`post FAIL #${item.id} (maybeSent=${maybeSent}): ${(err as Error).message.slice(0, 200)}`)
-      if (maybeSent) {
-        // ambiguous delivery — prefer a possibly-missed story over a duplicate
-        db.prepare(`UPDATE items SET status = 'posted', summary_json = ? WHERE id = ?`)
-          .run(JSON.stringify({ ...s, deliveryUncertain: true }), item.id)
-        posted++
-      } else {
-        const fails = item.fail_count + 1
-        db.prepare(`UPDATE items SET status = ?, fail_count = ?, next_retry_at = ? WHERE id = ?`)
-          .run(fails >= MAX_FAILS ? 'failed' : 'pending', fails, Date.now() + backoffMs(fails), item.id)
+      try {
+        if (maybeSent) {
+          // ambiguous delivery — prefer a possibly-missed story over a duplicate
+          db.prepare(`UPDATE items SET status = 'posted', summary_json = ? WHERE id = ?`)
+            .run(JSON.stringify({ ...s, deliveryUncertain: true }), item.id)
+          posted++
+        } else {
+          const fails = item.fail_count + 1
+          db.prepare(`UPDATE items SET status = ?, fail_count = ?, next_retry_at = ? WHERE id = ?`)
+            .run(fails >= MAX_FAILS ? 'failed' : 'pending', fails, Date.now() + backoffMs(fails), item.id)
+        }
+      } catch (dbErr) {
+        // row stays 'posting' → excluded from candidates; reconciled to
+        // 'posted' at the next cycle start (no duplicate either way)
+        log(`bookkeeping FAIL #${item.id} after send failure: ${(dbErr as Error).message.slice(0, 150)}`)
       }
+      continue
+    }
+
+    // BOOKKEEPING failure domain: the message is live in the channel — a DB
+    // error here must leave the row in 'posting' (reconciled → posted later),
+    // never back in 'pending' where it would be re-sent.
+    posted++
+    try {
+      db.prepare(`UPDATE items SET status = 'posted', posted_msg_id = ?, summary_json = ? WHERE id = ?`)
+        .run(msgId, JSON.stringify(s), item.id)
+      log(`posted #${item.id} [${item.category}] ${s.titleZh.slice(0, 60)}`)
+    } catch (dbErr) {
+      log(`posted #${item.id} but bookkeeping FAIL — leaving in 'posting' for reconcile: ${(dbErr as Error).message.slice(0, 150)}`)
     }
   }
 }
@@ -218,6 +238,9 @@ export async function runCycle(db: Database.Database, feeds: FeedConfig[]): Prom
   })
   await Promise.all(workers)
 
+  // cycles are serialized, so any 'posting' row here is a leftover from a
+  // bookkeeping failure — self-heal without waiting for a restart
+  reconcilePosting(db)
   retentionSweep(db)
   await publishPending(db)
 }

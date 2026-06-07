@@ -46,11 +46,14 @@ describe('titleSimilarity', () => {
     expect(isFuzzyDuplicate(normalizeTitle('Critical RCE Vulnerability Found in Apache Struts!'), recents)).toBe(true)
     expect(isFuzzyDuplicate(normalizeTitle('Ethereum upgrade ships on mainnet'), recents)).toBe(false)
   })
-  it('short/templated titles never fuzzy-match (URL dedup only)', () => {
-    // "苹果发布会" vs "苹果发布会前瞻" are DIFFERENT stories — jaccard would
-    // wrongly flag them, so short titles must bypass fuzzy matching entirely
+  it('short/templated titles only match at near-identity', () => {
+    // "苹果发布会" vs "苹果发布会前瞻" are DIFFERENT stories — 0.6 jaccard
+    // would wrongly flag them; short titles require ~identity instead
     expect(isFuzzyDuplicate(normalizeTitle('苹果发布会前瞻'), [normalizeTitle('苹果发布会')])).toBe(false)
     expect(isFuzzyDuplicate(normalizeTitle('苹果发布会'), [normalizeTitle('苹果发布会前瞻')])).toBe(false)
     expect(isFuzzyDuplicate(normalizeTitle('Weekly news roundup June'), [normalizeTitle('Weekly news roundup')])).toBe(false)
+    // …but IDENTICAL short headlines from two sources are still deduped
+    expect(isFuzzyDuplicate(normalizeTitle('苹果发布会'), [normalizeTitle('苹果发布会')])).toBe(true)
+    expect(isFuzzyDuplicate(normalizeTitle('OpenAI发布GPT-5'), [normalizeTitle('OpenAI 发布 GPT-5')])).toBe(true)
   })
 })

@@ -42,6 +42,15 @@ describe('formatPost', () => {
     })
     expect(html.length).toBeLessThan(2000)
   })
+  it('truncation never tears a surrogate pair at the cap boundary', () => {
+    const html = formatPost({
+      category: 'tech', source: 's',
+      titleZh: 'x'.repeat(299) + '😀'.repeat(5), summaryZh: '中'.repeat(899) + '🎉'.repeat(5),
+      url: 'https://e.com', importance: 3,
+    })
+    // no unpaired high surrogate anywhere in the output
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(html)).toBe(false)
+  })
   it('omits empty summary block and flash for normal importance', () => {
     const html = formatPost({
       category: 'tech', source: 'HN', titleZh: 'T', summaryZh: '', url: 'https://e.com', importance: 3,

@@ -33,9 +33,10 @@ export function formatPost(opts: {
 }): string {
   const c = CATEGORY_TAG[opts.category] ?? { emoji: '📰', tag: '#资讯' }
   const flash = opts.importance >= 5 ? '⚡️ ' : ''
-  // hard caps keep the message far below Telegram's 4096-char limit
-  const title = opts.titleZh.slice(0, 300)
-  const summary = opts.summaryZh.slice(0, 900)
+  // hard caps keep the message far below Telegram's 4096-char limit;
+  // slice on code points so an emoji at the boundary can't be torn in half
+  const title = [...opts.titleZh].slice(0, 300).join('')
+  const summary = [...opts.summaryZh].slice(0, 900).join('')
   const lines = [
     `${c.emoji} ${c.tag} | ${escapeHtml(opts.source)}`,
     '',
@@ -117,10 +118,10 @@ export async function sendToChannel(html: string): Promise<number> {
     }
 
     if (res.status >= 500) {
-      // gateway hiccup, request not processed — safe to retry
-      console.warn(`tg ${res.status}, retrying in ${5 * (attempt + 1)}s`)
-      await sleep(5000 * (attempt + 1))
-      continue
+      // a 502/504 from Telegram's edge does NOT prove the request was never
+      // processed — re-sending the same message risks a duplicate post.
+      // Treat like an in-flight timeout: ambiguous, caller decides.
+      throw new SendError(`tg gateway error ${res.status}`, true)
     }
 
     let data: TgResponse
@@ -142,5 +143,5 @@ export async function sendToChannel(html: string): Promise<number> {
     // definite rejection (400 bad markup, 403 kicked from channel, …)
     throw new SendError(`tg sendMessage failed: ${data.error_code} ${data.description}`, false)
   }
-  throw new SendError('tg sendMessage: exhausted retries (429/5xx)', false)
+  throw new SendError('tg sendMessage: exhausted retries (429)', false)
 }

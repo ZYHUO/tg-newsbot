@@ -127,6 +127,31 @@ describe('publishPending failure handling', () => {
     expect(mockSend).toHaveBeenCalledTimes(1)
   })
 
+  it('send success + bookkeeping DB failure → row stays posting, reconciled, NEVER re-sent', async () => {
+    const db = resetDbForTest(':memory:')
+    insertPending(db, 'Fed Cuts Rates')
+    mockSummarize.mockResolvedValue(okSummary)
+    mockSend.mockResolvedValue(555) // Telegram ACCEPTED the message
+
+    // the success-bookkeeping UPDATE (the one writing posted_msg_id) throws
+    const flaky = {
+      prepare: (sql: string) => sql.includes('posted_msg_id')
+        ? { run: () => { throw new Error('SQLITE_BUSY: database is locked') } }
+        : db.prepare(sql),
+    }
+    await publishPending(flaky as never)
+    let row = db.prepare('SELECT * FROM items').get() as any
+    expect(row.status).toBe('posting') // NOT reverted to pending
+    expect(mockSend).toHaveBeenCalledTimes(1)
+
+    // next cycle: reconcile self-heals, item is never sent again
+    reconcilePosting(db)
+    await publishPending(db)
+    row = db.prepare('SELECT * FROM items').get() as any
+    expect(row.status).toBe('posted')
+    expect(mockSend).toHaveBeenCalledTimes(1)
+  })
+
   it('reconcilePosting marks crash-window rows posted (prefer missed over duplicate)', () => {
     const db = resetDbForTest(':memory:')
     insertPending(db, 'In Flight During Crash', { status: 'posting' })
