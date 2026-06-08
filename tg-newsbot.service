@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/root/tg-newsbot
-ExecStart=/usr/bin/node /root/tg-newsbot/dist/index.js
+ExecStart=/root/.hermes/node/bin/node /root/tg-newsbot/dist/index.js
 Restart=always
 RestartSec=15
 Environment=NODE_ENV=production

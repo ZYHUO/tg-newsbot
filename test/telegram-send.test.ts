@@ -48,4 +48,46 @@ describe('sendToChannel delivery semantics', () => {
   it('SendError is exported and carries maybeSent', () => {
     expect(new SendError('m', true).maybeSent).toBe(true)
   })
+
+  it('plain text message disables the link preview', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(tg({ ok: true, result: { message_id: 1 } }))
+    vi.stubGlobal('fetch', fetchMock)
+    await sendToChannel('hello')
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toContain('/sendMessage')
+    expect(JSON.parse(init.body).link_preview_options).toEqual({ is_disabled: true })
+  })
+
+  it('with photoUrl: calls sendPhoto with caption, no text message', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(tg({ ok: true, result: { message_id: 9 } }))
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(sendToChannel('full text', { photoUrl: 'https://x/i.jpg', captionText: 'cap' })).resolves.toBe(9)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toContain('/sendPhoto')
+    const body = JSON.parse(init.body)
+    expect(body.photo).toBe('https://x/i.jpg')
+    expect(body.caption).toBe('cap')
+  })
+
+  it('photo definite rejection (400) falls back to text sendMessage', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(tg({ ok: false, error_code: 400, description: 'failed to get HTTP URL content' }, 400))
+      .mockResolvedValueOnce(tg({ ok: true, result: { message_id: 42 } }))
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(sendToChannel('full text', { photoUrl: 'https://x/bad.jpg', captionText: 'cap' })).resolves.toBe(42)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls[0][0]).toContain('/sendPhoto')
+    expect(fetchMock.mock.calls[1][0]).toContain('/sendMessage')
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).text).toBe('full text')
+  })
+
+  it('photo AMBIGUOUS failure (5xx) does NOT fall back (no duplicate risk)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('<html>bad gw</html>', { status: 502 }))
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(sendToChannel('full text', { photoUrl: 'https://x/i.jpg', captionText: 'cap' }))
+      .rejects.toMatchObject({ maybeSent: true })
+    expect(fetchMock).toHaveBeenCalledTimes(1) // only the sendPhoto attempt
+    expect(fetchMock.mock.calls[0][0]).toContain('/sendPhoto')
+  })
 })

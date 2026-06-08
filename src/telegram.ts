@@ -23,20 +23,28 @@ function isValidHttpUrl(s: string): boolean {
   }
 }
 
-export function formatPost(opts: {
+export interface PostInput {
   category: string
   source: string
   titleZh: string
   summaryZh: string
   url: string
   importance: number
-}): string {
+}
+
+/**
+ * Render a post as Telegram HTML.
+ * - default: sized for sendMessage (4096 limit)
+ * - compact: sized for a sendPhoto caption (1024 limit) — shorter summary
+ */
+export function formatPost(opts: PostInput, { compact = false } = {}): string {
   const c = CATEGORY_TAG[opts.category] ?? { emoji: '📰', tag: '#资讯' }
   const flash = opts.importance >= 5 ? '⚡️ ' : ''
-  // hard caps keep the message far below Telegram's 4096-char limit;
-  // slice on code points so an emoji at the boundary can't be torn in half
-  const title = [...opts.titleZh].slice(0, 300).join('')
-  const summary = [...opts.summaryZh].slice(0, 900).join('')
+  // slice on code points so an emoji at the boundary can't be torn in half.
+  // compact budgets keep header+title+summary+link well under 1024 visible
+  // chars (the href URL is an entity and does not count toward the limit).
+  const title = [...opts.titleZh].slice(0, compact ? 200 : 300).join('')
+  const summary = [...opts.summaryZh].slice(0, compact ? 600 : 900).join('')
   const lines = [
     `${c.emoji} ${c.tag} | ${escapeHtml(opts.source)}`,
     '',
@@ -76,51 +84,31 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
 let lastSentAt: number | null = null
 
-/**
- * Send one HTML message to the channel: paced (MIN_SECONDS_BETWEEN_POSTS,
- * persisted across restarts), retrying 429 and transient 5xx.
- */
-export async function sendToChannel(html: string): Promise<number> {
-  if (config.dryRun) {
-    console.log('--- DRY RUN: would post ---\n' + html + '\n---')
-    return 0
-  }
+/** One Telegram Bot API method call with 429/5xx handling. Throws SendError. */
+async function callTg(method: string, payload: Record<string, unknown>): Promise<number> {
   const db = getDb()
-  if (lastSentAt === null) {
-    lastSentAt = Number(metaGet(db, 'last_sent_at') ?? 0)
-  }
-  const gap = config.minSecondsBetweenPosts * 1000
-  const wait = lastSentAt + gap - Date.now()
-  if (wait > 0) await sleep(wait)
-
   for (let attempt = 0; attempt < 4; attempt++) {
     lastSentAt = Date.now()
     metaSet(db, 'last_sent_at', String(lastSentAt))
 
     let res: Response
     try {
-      res = await fetch(`https://api.telegram.org/bot${config.botToken}/sendMessage`, {
+      res = await fetch(`https://api.telegram.org/bot${config.botToken}/${method}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          chat_id: config.channelId,
-          text: html,
-          parse_mode: 'HTML',
-          link_preview_options: { is_disabled: false, prefer_small_media: true },
-        }),
+        body: JSON.stringify(payload),
         signal: AbortSignal.timeout(30_000),
       })
     } catch (err) {
       // timeout: request may have reached Telegram → ambiguous.
       // pre-connection network errors (ECONNREFUSED etc.) → definitely not sent.
       const timedOut = (err as Error).name === 'TimeoutError' || (err as Error).name === 'AbortError'
-      throw new SendError(`tg request failed: ${(err as Error).message}`, timedOut)
+      throw new SendError(`tg ${method} request failed: ${(err as Error).message}`, timedOut)
     }
 
     if (res.status >= 500) {
       // a 502/504 from Telegram's edge does NOT prove the request was never
       // processed — re-sending the same message risks a duplicate post.
-      // Treat like an in-flight timeout: ambiguous, caller decides.
       throw new SendError(`tg gateway error ${res.status}`, true)
     }
 
@@ -140,8 +128,55 @@ export async function sendToChannel(html: string): Promise<number> {
       await sleep(retry * 1000)
       continue
     }
-    // definite rejection (400 bad markup, 403 kicked from channel, …)
-    throw new SendError(`tg sendMessage failed: ${data.error_code} ${data.description}`, false)
+    // definite rejection (400 bad markup/caption, 403 kicked from channel, …)
+    throw new SendError(`tg ${method} failed: ${data.error_code} ${data.description}`, false)
   }
-  throw new SendError('tg sendMessage: exhausted retries (429)', false)
+  throw new SendError(`tg ${method}: exhausted retries (429)`, false)
+}
+
+/**
+ * Post to the channel: paced (MIN_SECONDS_BETWEEN_POSTS, persisted across
+ * restarts). With a photoUrl, sends an image + caption; if Telegram rejects
+ * the photo (can't fetch it, bad format, caption too long — any definite 4xx),
+ * falls back to a plain text message so the story is never dropped. Plain
+ * text messages have the link preview disabled.
+ */
+export async function sendToChannel(
+  text: string,
+  opts: { photoUrl?: string; captionText?: string } = {},
+): Promise<number> {
+  if (config.dryRun) {
+    const what = opts.photoUrl ? `[PHOTO ${opts.photoUrl}]\n` + (opts.captionText ?? text) : text
+    console.log('--- DRY RUN: would post ---\n' + what + '\n---')
+    return 0
+  }
+  const db = getDb()
+  if (lastSentAt === null) lastSentAt = Number(metaGet(db, 'last_sent_at') ?? 0)
+  const gap = config.minSecondsBetweenPosts * 1000
+  const wait = lastSentAt + gap - Date.now()
+  if (wait > 0) await sleep(wait)
+
+  if (opts.photoUrl) {
+    try {
+      return await callTg('sendPhoto', {
+        chat_id: config.channelId,
+        photo: opts.photoUrl,
+        caption: opts.captionText ?? text,
+        parse_mode: 'HTML',
+      })
+    } catch (err) {
+      // ambiguous failures (timeout/5xx/unreadable) must NOT fall through —
+      // the photo may have been delivered; re-sending text would duplicate.
+      if (err instanceof SendError && err.maybeSent) throw err
+      // definite rejection of the photo → send the story as text instead
+      console.warn(`photo rejected, falling back to text: ${(err as Error).message.slice(0, 160)}`)
+    }
+  }
+
+  return await callTg('sendMessage', {
+    chat_id: config.channelId,
+    text,
+    parse_mode: 'HTML',
+    link_preview_options: { is_disabled: true },
+  })
 }

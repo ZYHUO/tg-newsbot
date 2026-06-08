@@ -42,6 +42,15 @@ describe('formatPost', () => {
     })
     expect(html.length).toBeLessThan(2000)
   })
+  it('compact caption mode keeps visible text under the 1024 limit', () => {
+    const html = formatPost({
+      category: 'tech', source: 'A Very Long Source Name', titleZh: '标'.repeat(5000),
+      summaryZh: '要'.repeat(5000), url: 'https://e.com/' + 'p'.repeat(2000), importance: 5,
+    }, { compact: true })
+    // visible length excludes the href URL (an entity, not counted by Telegram)
+    const visible = html.replace(/<a href="[^"]*">/g, '').replace(/<\/?[a-z]+>/g, '')
+    expect([...visible].length).toBeLessThan(1024)
+  })
   it('truncation never tears a surrogate pair at the cap boundary', () => {
     const html = formatPost({
       category: 'tech', source: 's',

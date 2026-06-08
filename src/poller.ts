@@ -68,7 +68,7 @@ export async function pollFeed(db: Database.Database, feed: FeedConfig): Promise
     }
     const res = insert.run(
       feed.url, feed.category, feed.name, it.url, hash, it.title, norm,
-      it.publishedAt, now, status, JSON.stringify({ excerpt: it.excerpt }),
+      it.publishedAt, now, status, JSON.stringify({ excerpt: it.excerpt, image: it.imageUrl }),
     )
     if (res.changes > 0 && status === 'pending') {
       fresh++
@@ -136,9 +136,11 @@ export async function publishPending(db: Database.Database): Promise<void> {
   for (const item of candidates) {
     if (posted >= config.maxPostsPerCycle) break
 
-    const excerpt = item.summary_json
-      ? String((JSON.parse(item.summary_json) as { excerpt?: string }).excerpt ?? '')
-      : ''
+    const meta = item.summary_json
+      ? (JSON.parse(item.summary_json) as { excerpt?: string; image?: string })
+      : {}
+    const excerpt = String(meta.excerpt ?? '')
+    const imageUrl = String(meta.image ?? '')
 
     let s: Summary
     try {
@@ -173,14 +175,17 @@ export async function publishPending(db: Database.Database): Promise<void> {
     // the item — anything after a successful send must never revert it.
     let msgId: number
     try {
-      msgId = await sendToChannel(formatPost({
+      const post = {
         category: item.category,
         source: item.source_name,
         titleZh: s.titleZh,
         summaryZh: s.summaryZh,
         url: item.url,
         importance: s.importance,
-      }))
+      }
+      msgId = await sendToChannel(formatPost(post), imageUrl
+        ? { photoUrl: imageUrl, captionText: formatPost(post, { compact: true }) }
+        : {})
     } catch (err) {
       const maybeSent = err instanceof SendError && err.maybeSent
       log(`post FAIL #${item.id} (maybeSent=${maybeSent}): ${(err as Error).message.slice(0, 200)}`)

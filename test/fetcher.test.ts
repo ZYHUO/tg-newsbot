@@ -65,3 +65,56 @@ describe('parseFeed', () => {
     expect(parseFeed(xml)[0].title).toBe('It’s here & now')
   })
 })
+
+describe('image extraction', () => {
+  const wrap = (item: string) => parseFeed(`<?xml version="1.0"?>
+    <rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+    <channel><title>D</title>${item}</channel></rss>`)[0]
+
+  it('prefers <enclosure type=image>', () => {
+    expect(wrap(`<item><title>t</title><link>https://e.com/1</link>
+      <enclosure url="https://cdn.e.com/a.jpg" type="image/jpeg"/></item>`).imageUrl)
+      .toBe('https://cdn.e.com/a.jpg')
+  })
+  it('uses media:content medium=image', () => {
+    expect(wrap(`<item><title>t</title><link>https://e.com/1</link>
+      <media:content url="https://cdn.e.com/b.png" medium="image"/></item>`).imageUrl)
+      .toBe('https://cdn.e.com/b.png')
+  })
+  it('uses media:thumbnail', () => {
+    expect(wrap(`<item><title>t</title><link>https://e.com/1</link>
+      <media:thumbnail url="https://cdn.e.com/thumb.webp"/></item>`).imageUrl)
+      .toBe('https://cdn.e.com/thumb.webp')
+  })
+  it('falls back to first <img> in CDATA body', () => {
+    expect(wrap(`<item><title>t</title><link>https://e.com/1</link>
+      <content:encoded><![CDATA[<p>hi</p><img src="https://cdn.e.com/c.jpg"> more]]></content:encoded></item>`).imageUrl)
+      .toBe('https://cdn.e.com/c.jpg')
+  })
+  it('finds <img> in escaped (non-CDATA) HTML body', () => {
+    expect(wrap(`<item><title>t</title><link>https://e.com/1</link>
+      <description>&lt;img src="https://cdn.e.com/d.png"/&gt;text</description></item>`).imageUrl)
+      .toBe('https://cdn.e.com/d.png')
+  })
+  it('decodes entities in enclosure/attribute URLs', () => {
+    expect(wrap(`<item><title>t</title><link>https://e.com/1</link>
+      <enclosure url="https://cdn.e.com/a.jpg?x=1&#038;y=2" type="image/jpeg"/></item>`).imageUrl)
+      .toBe('https://cdn.e.com/a.jpg?x=1&y=2')
+  })
+  it('promotes protocol-relative // URLs to https', () => {
+    expect(wrap(`<item><title>t</title><link>https://e.com/1</link>
+      <enclosure url="//cdn.e.com/e.jpg" type="image/jpeg"/></item>`).imageUrl)
+      .toBe('https://cdn.e.com/e.jpg')
+  })
+  it('skips tracking pixels, gifs, and relative URLs', () => {
+    expect(wrap(`<item><title>t</title><link>https://e.com/1</link>
+      <description>&lt;img src="https://feedburner.com/~ff/x.png"/&gt;</description></item>`).imageUrl).toBe('')
+    expect(wrap(`<item><title>t</title><link>https://e.com/1</link>
+      <description>&lt;img src="https://e.com/anim.gif"/&gt;</description></item>`).imageUrl).toBe('')
+    expect(wrap(`<item><title>t</title><link>https://e.com/1</link>
+      <description>&lt;img src="/local/rel.jpg"/&gt;</description></item>`).imageUrl).toBe('')
+  })
+  it('is empty when there is no image', () => {
+    expect(wrap(`<item><title>t</title><link>https://e.com/1</link><description>just text</description></item>`).imageUrl).toBe('')
+  })
+})
