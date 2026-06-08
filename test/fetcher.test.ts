@@ -147,6 +147,13 @@ describe('image extraction', () => {
     expect(wrap(`<item><title>t</title><link>https://e.com/1</link>
       <enclosure url="https://stats.e.com/track/open.png" type="image/png"/></item>`).imageUrl).toBe('')
   })
+  it('rejects generic logo/placeholder images but keeps named photos', () => {
+    expect(wrap(`<item><title>t</title><link>https://e.com/1</link>
+      <enclosure url="https://image.panewslab.com/images/logo1.jpg" type="image/jpeg"/></item>`).imageUrl).toBe('')
+    expect(wrap(`<item><title>t</title><link>https://e.com/1</link>
+      <enclosure url="https://cdn.e.com/company-logo-acquired.jpg" type="image/jpeg"/></item>`).imageUrl)
+      .toBe('https://cdn.e.com/company-logo-acquired.jpg')
+  })
   it('a malformed numeric entity does NOT drop the whole feed', () => {
     const items = parseFeed(`<?xml version="1.0"?><rss version="2.0"><channel><title>D</title>
       <item><title>good one</title><link>https://e.com/1</link></item>

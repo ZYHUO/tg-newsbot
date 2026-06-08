@@ -115,6 +115,9 @@ function cleanImageUrl(raw: string): string {
   // legit names survive ("track-and-field.jpg", "spacerville-news.jpg")
   if (/\/(pixel|beacon|spacer|track|tracking)(\/|\.|$)/i.test(u)) return ''
   if (/[/_.-]1x1([/_.-]|$)/i.test(u)) return ''
+  // generic site logo/placeholder og:images (repeat on every article) — match
+  // only when it's the WHOLE filename, so "company-logo-news.jpg" survives
+  if (/\/(logo\d*|default|placeholder|share|og-?image|og-?default)\.(jpe?g|png|webp|gif)(\?|#|$)/i.test(u)) return ''
   if (/\.(gif|svg)(\?|#|$)/i.test(u)) return ''
   return u
 }
@@ -183,6 +186,38 @@ function pickImage(node: Record<string, unknown>): string {
   for (const field of ['content:encoded', 'description', 'summary', 'content']) {
     const c = imgFromBody(text(node[field]))
     if (c) return c
+  }
+  return ''
+}
+
+/**
+ * Best-effort cover image: fetch the article page and read its og:image
+ * (or twitter:image) meta tag. Used when the feed entry carried no image.
+ * Never throws — returns '' on any failure.
+ */
+export async function fetchOgImage(pageUrl: string, needsProxy = false): Promise<string> {
+  let html: string
+  try {
+    html = await fetchUrl(pageUrl, { proxy: needsProxy })
+  } catch {
+    if (needsProxy) return ''
+    try { html = await fetchUrl(pageUrl, { proxy: true }) } catch { return '' }
+  }
+  const head = html.slice(0, 120_000) // og tags live in <head>
+  const patterns = [
+    /<meta[^>]+(?:property|name)=["']og:image(?::url)?["'][^>]+content=["']([^"']+)["']/i,
+    /<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']og:image(?::url)?["']/i,
+    /<meta[^>]+name=["']twitter:image(?::src)?["'][^>]+content=["']([^"']+)["']/i,
+    /<meta[^>]+content=["']([^"']+)["'][^>]+name=["']twitter:image(?::src)?["']/i,
+  ]
+  for (const re of patterns) {
+    const m = head.match(re)
+    if (m) {
+      let u = decodeEntities(decodeEntities(m[1].trim()))
+      try { u = new URL(u, pageUrl).href } catch { /* keep as-is */ }
+      const c = cleanImageUrl(u)
+      if (c) return c
+    }
   }
   return ''
 }

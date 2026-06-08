@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3'
-import { config, type FeedConfig } from './config.js'
-import { fetchFeed } from './fetcher.js'
+import { config, minImportanceFor, type FeedConfig } from './config.js'
+import { fetchFeed, fetchOgImage } from './fetcher.js'
 import { urlHash, normalizeTitle, isFuzzyDuplicate } from './dedupe.js'
 import { summarize, type Summary } from './summarize.js'
 import { formatPost, sendToChannel, SendError } from './telegram.js'
@@ -13,8 +13,6 @@ function backoffMs(failCount: number): number {
   return Math.min(10 * 60_000 * 2 ** Math.max(0, failCount - 1), 6 * 3600_000)
 }
 const MAX_FAILS = 8
-/** after this many summarize failures, post the raw title instead of dropping the story */
-const SUMMARIZE_FALLBACK_AFTER = 5
 
 /** Fetch one feed and stage new items into the DB. */
 export async function pollFeed(db: Database.Database, feed: FeedConfig): Promise<void> {
@@ -132,6 +130,14 @@ export async function publishPending(db: Database.Database): Promise<void> {
     LIMIT ?
   `).all(MAX_FAILS, now, config.maxPostsPerCycle * 3) as import('./db.js').ItemRow[]
 
+  // cross-language dedup pool: Chinese titles of stories already posted in the
+  // last 48h. The fetch-time dedup compares ORIGINAL titles, which fails when
+  // the same story arrives in different languages (中文源 vs 英文源); comparing
+  // the translated 标题 catches those.
+  const recentZhTitles = (db.prepare(
+    `SELECT title_zh_norm FROM items WHERE title_zh_norm IS NOT NULL AND fetched_at > ?`,
+  ).all(now - 48 * 3600 * 1000) as { title_zh_norm: string }[]).map(r => r.title_zh_norm)
+
   let posted = 0
   for (const item of candidates) {
     if (posted >= config.maxPostsPerCycle) break
@@ -140,27 +146,35 @@ export async function publishPending(db: Database.Database): Promise<void> {
       ? (JSON.parse(item.summary_json) as { excerpt?: string; image?: string })
       : {}
     const excerpt = String(meta.excerpt ?? '')
-    const imageUrl = String(meta.image ?? '')
+    let imageUrl = String(meta.image ?? '')
 
     let s: Summary
     try {
       s = await summarize(item.title, excerpt, item.source_name, item.category)
     } catch (err) {
+      // never post an un-summarized story; retry with backoff until MAX_FAILS
       log(`summarize FAIL #${item.id} ${item.title.slice(0, 60)}: ${(err as Error).message.slice(0, 150)}`)
       const fails = item.fail_count + 1
-      if (fails >= SUMMARIZE_FALLBACK_AFTER) {
-        // LLM has been failing for hours — post the raw title rather than
-        // silently dropping a potentially important story
-        s = { titleZh: item.title, summaryZh: '', skip: false, importance: 3 }
-      } else {
-        db.prepare('UPDATE items SET fail_count = ?, next_retry_at = ? WHERE id = ?')
-          .run(fails, Date.now() + backoffMs(fails), item.id)
-        continue
-      }
+      db.prepare('UPDATE items SET status = ?, fail_count = ?, next_retry_at = ? WHERE id = ?')
+        .run(fails >= MAX_FAILS ? 'failed' : 'pending', fails, Date.now() + backoffMs(fails), item.id)
+      continue
     }
-    if (s.skip) {
+    // drop: LLM flagged junk, no usable summary, or below the category's bar
+    const reason = s.skip ? 'llm-skip'
+      : !s.summaryZh.trim() ? 'no-summary'
+      : s.importance < minImportanceFor(item.category) ? `imp<${minImportanceFor(item.category)}`
+      : ''
+    if (reason) {
       db.prepare(`UPDATE items SET status = 'skipped', summary_json = ? WHERE id = ?`)
-        .run(JSON.stringify(s), item.id)
+        .run(JSON.stringify({ ...s, skipReason: reason }), item.id)
+      continue
+    }
+    // cross-language duplicate of an already-posted story
+    const zhNorm = normalizeTitle(s.titleZh)
+    if (isFuzzyDuplicate(zhNorm, recentZhTitles)) {
+      db.prepare(`UPDATE items SET status = 'skipped', summary_json = ? WHERE id = ?`)
+        .run(JSON.stringify({ ...s, skipReason: 'dup-zh' }), item.id)
+      log(`skip dup-zh #${item.id}: ${s.titleZh.slice(0, 50)}`)
       continue
     }
 
@@ -170,6 +184,11 @@ export async function publishPending(db: Database.Database): Promise<void> {
       `UPDATE items SET status = 'posting' WHERE id = ? AND status = 'pending'`,
     ).run(item.id).changes
     if (claimed !== 1) continue
+
+    // best-effort cover image: scrape og:image when the feed gave us none
+    if (!imageUrl && config.fetchOgImage) {
+      try { imageUrl = await fetchOgImage(item.url) } catch { /* no image */ }
+    }
 
     // SEND failure domain: only errors thrown by sendToChannel may re-queue
     // the item — anything after a successful send must never revert it.
@@ -192,8 +211,9 @@ export async function publishPending(db: Database.Database): Promise<void> {
       try {
         if (maybeSent) {
           // ambiguous delivery — prefer a possibly-missed story over a duplicate
-          db.prepare(`UPDATE items SET status = 'posted', summary_json = ? WHERE id = ?`)
-            .run(JSON.stringify({ ...s, deliveryUncertain: true }), item.id)
+          db.prepare(`UPDATE items SET status = 'posted', summary_json = ?, title_zh_norm = ? WHERE id = ?`)
+            .run(JSON.stringify({ ...s, deliveryUncertain: true }), zhNorm, item.id)
+          recentZhTitles.push(zhNorm)
           posted++
         } else {
           const fails = item.fail_count + 1
@@ -212,9 +232,10 @@ export async function publishPending(db: Database.Database): Promise<void> {
     // error here must leave the row in 'posting' (reconciled → posted later),
     // never back in 'pending' where it would be re-sent.
     posted++
+    recentZhTitles.push(zhNorm)
     try {
-      db.prepare(`UPDATE items SET status = 'posted', posted_msg_id = ?, summary_json = ? WHERE id = ?`)
-        .run(msgId, JSON.stringify(s), item.id)
+      db.prepare(`UPDATE items SET status = 'posted', posted_msg_id = ?, summary_json = ?, title_zh_norm = ? WHERE id = ?`)
+        .run(msgId, JSON.stringify(s), zhNorm, item.id)
       log(`posted #${item.id} [${item.category}] ${s.titleZh.slice(0, 60)}`)
     } catch (dbErr) {
       log(`posted #${item.id} but bookkeeping FAIL — leaving in 'posting' for reconcile: ${(dbErr as Error).message.slice(0, 150)}`)

@@ -16,6 +16,11 @@ vi.mock('../src/telegram.js', () => ({
   sendToChannel: vi.fn(),
   SendError: MockSendError,
 }))
+// keep the real fetcher but stub og:image scraping so tests never hit the network
+vi.mock('../src/fetcher.js', async (orig) => ({
+  ...(await orig<typeof import('../src/fetcher.js')>()),
+  fetchOgImage: vi.fn().mockResolvedValue(''),
+}))
 
 import { summarize } from '../src/summarize.js'
 import { sendToChannel } from '../src/telegram.js'
@@ -84,27 +89,59 @@ describe('publishPending failure handling', () => {
     expect(mockSend).toHaveBeenCalledTimes(1)
   })
 
-  it('LLM outage → backoff retries, then title-only fallback post instead of dropping the story', async () => {
+  it('LLM outage → retries with backoff, never posts an un-summarized story', async () => {
     const db = resetDbForTest(':memory:')
     insertPending(db, 'Critical Zero-Day In OpenSSL')
     mockSummarize.mockRejectedValue(new Error('LLM 503'))
     mockSend.mockResolvedValue(777)
 
-    // 4 failing attempts (fast-forwarding the backoff each time)
-    for (let i = 0; i < 4; i++) {
+    // retries every cycle (fast-forwarding the backoff), never sends
+    for (let i = 0; i < 6; i++) {
       await publishPending(db)
       db.prepare('UPDATE items SET next_retry_at = ?').run(Date.now() - 1000)
     }
-    let row = db.prepare('SELECT * FROM items').get() as any
-    expect(row.status).toBe('pending')
-    expect(row.fail_count).toBe(4)
-    expect(mockSend).not.toHaveBeenCalled()
+    const row = db.prepare('SELECT * FROM items').get() as any
+    expect(['pending', 'failed']).toContain(row.status)
+    expect(mockSend).not.toHaveBeenCalled() // never posts a raw/empty story
+  })
 
-    // 5th attempt: fallback — post the raw title rather than lose the story
+  it('drops items with no summary, or below the category importance bar', async () => {
+    const db = resetDbForTest(':memory:')
+    insertPending(db, 'empty summary item', { category: 'world' })
+    insertPending(db, 'low importance crypto', { category: 'crypto' })
+    insertPending(db, 'good world item', { category: 'world' })
+    mockSend.mockResolvedValue(1)
+    mockSummarize
+      .mockResolvedValueOnce({ titleZh: '空', summaryZh: '   ', skip: false, importance: 5 })
+      .mockResolvedValueOnce({ titleZh: '加密小事', summaryZh: '一些内容', skip: false, importance: 3 }) // crypto bar is 4
+      .mockResolvedValueOnce({ titleZh: '世界大事', summaryZh: '正经摘要', skip: false, importance: 3 }) // world bar is 3
+
     await publishPending(db)
-    row = db.prepare('SELECT * FROM items').get() as any
-    expect(row.status).toBe('posted')
-    expect(JSON.parse(row.summary_json).titleZh).toBe('Critical Zero-Day In OpenSSL')
+    const rows = db.prepare('SELECT title, status, summary_json FROM items ORDER BY id').all() as any[]
+    expect(rows[0].status).toBe('skipped')
+    expect(JSON.parse(rows[0].summary_json).skipReason).toBe('no-summary')
+    expect(rows[1].status).toBe('skipped')
+    expect(JSON.parse(rows[1].summary_json).skipReason).toBe('imp<4')
+    expect(rows[2].status).toBe('posted')
+    expect(mockSend).toHaveBeenCalledTimes(1)
+  })
+
+  it('drops a cross-language duplicate by comparing translated Chinese titles', async () => {
+    const db = resetDbForTest(':memory:')
+    insertPending(db, 'EN: Ledger CTO slams EU compliance costs choking Web3', { category: 'crypto', url: 'https://a/1' })
+    insertPending(db, '中文：Ledger CTO 谈欧盟合规成本', { category: 'crypto', url: 'https://b/2' })
+    mockSend.mockResolvedValue(1)
+    // both translate to near-identical Chinese titles
+    mockSummarize
+      .mockResolvedValueOnce({ titleZh: 'Ledger CTO 称欧盟高昂合规成本正在扼杀 Web3 创新', summaryZh: 'x', skip: false, importance: 4 })
+      .mockResolvedValueOnce({ titleZh: 'Ledger CTO：欧盟高昂的合规成本正在扼杀 Web3 创新', summaryZh: 'y', skip: false, importance: 4 })
+
+    await publishPending(db)
+    const rows = db.prepare('SELECT status, summary_json FROM items ORDER BY id').all() as any[]
+    expect(rows[0].status).toBe('posted')
+    expect(rows[1].status).toBe('skipped')
+    expect(JSON.parse(rows[1].summary_json).skipReason).toBe('dup-zh')
+    expect(mockSend).toHaveBeenCalledTimes(1) // the duplicate was NOT sent
   })
 
   it('stale pending items expire instead of flooding after an outage', async () => {

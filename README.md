@@ -8,7 +8,7 @@ Telegram 频道实时新闻推送：轮询 RSS/Atom 源 → 去重 → LLM 中�
 feeds.json (6 大类 ~40 源，已实测可用性)
    │  每 60s 检查到期源（每源独立 intervalSec，默认 600s）
    ▼
-fetcher  curl 抓取（按源走 SOCKS 代理）→ 解析 RSS2/Atom/RDF
+fetcher  curl 抓取（按源走 SOCKS 代理）→ 解析 RSS2/Atom/RDF + 提取内嵌图
    ▼
 dedupe   URL 规范化哈希（去 utm 等）+ 跨源标题模糊去重（CJK bigram jaccard ≥0.6）
    ▼
@@ -16,8 +16,20 @@ SQLite   data/newsbot.db；首次见到的源静默播种（seeded），不发�
    ▼
 summarize 本机 LLM（OpenAI 兼容端点）→ 中文标题+2-3 句摘要 + 垃圾过滤(skip) + 重要度
    ▼
-telegram  HTML 消息，4s 限速 + 429 退避；importance≥5 加 ⚡
+过滤层   ① 空摘要不发  ② 分类别重要性门槛(AI/时事/安全≥3, 加密/科技/开源≥4)
+         ③ 跨语言去重(翻译后用中文标题再比一次，抓同一新闻的中/英双源)
+   ▼
+配图     无内嵌图时抓原文页 og:image（过滤站点 logo/占位图）
+   ▼
+telegram  有图 sendPhoto(图+caption)，无图 sendMessage(关预览)；
+          4s 限速 + 429 退避；importance≥5 加 ⚡；图被拒自动降级纯文本
 ```
+
+## 调节"少而精"
+
+- 整体太吵 → 调高 `CATEGORY_MIN_IMPORTANCE`（如 `crypto:5,tech:5`）
+- 某类想多看 → 调低（如 `world:2`）
+- 改完 `systemctl restart tg-newsbot` 生效；门槛是 LLM 打的 1-5 分
 
 ## 运维
 
