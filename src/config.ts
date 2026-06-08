@@ -5,6 +5,12 @@ const DEFAULT_CATEGORY_MIN_IMPORTANCE: Record<string, number> = {
   crypto: 4, tech: 4, opensource_dev: 4, // noisier beats — strict
 }
 
+/** Number() but falls back to `def` for non-numeric/NaN env values. */
+function finiteOr(raw: string | undefined, def: number): number {
+  const n = Number(raw)
+  return Number.isFinite(n) ? n : def
+}
+
 /** Parse `cat:n,cat:n` env override; falls back to the built-in map. */
 function parseThresholds(raw: string | undefined): Record<string, number> {
   if (!raw) return DEFAULT_CATEGORY_MIN_IMPORTANCE
@@ -40,7 +46,7 @@ export const config = {
   // the category's threshold. Important beats (AI/world/security) are lenient;
   // noisier beats (crypto/tech/opensource) require a higher bar.
   categoryMinImportance: parseThresholds(process.env.CATEGORY_MIN_IMPORTANCE),
-  defaultMinImportance: Number(process.env.DEFAULT_MIN_IMPORTANCE ?? 3),
+  defaultMinImportance: finiteOr(process.env.DEFAULT_MIN_IMPORTANCE, 3),
   // Best-effort cover image: when the feed entry has no image, scrape the
   // article page's og:image before posting.
   fetchOgImage: process.env.FETCH_OG_IMAGE !== '0',

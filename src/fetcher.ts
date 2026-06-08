@@ -22,10 +22,10 @@ export interface RawItem {
  * assorted TLS weirdness of news sites far more reliably than node fetch
  * on this network, and feed volume is low enough that spawning is free.
  */
-export async function fetchUrl(url: string, opts: { proxy?: boolean } = {}): Promise<string> {
+export async function fetchUrl(url: string, opts: { proxy?: boolean; timeoutSec?: number } = {}): Promise<string> {
   const args = [
     '-sSL',
-    '--max-time', String(config.fetchTimeoutSec),
+    '--max-time', String(opts.timeoutSec ?? config.fetchTimeoutSec),
     '--compressed',
     '-A', UA,
     ...(opts.proxy ? ['-x', config.proxy] : []),
@@ -193,31 +193,29 @@ function pickImage(node: Record<string, unknown>): string {
 /**
  * Best-effort cover image: fetch the article page and read its og:image
  * (or twitter:image) meta tag. Used when the feed entry carried no image.
- * Never throws — returns '' on any failure.
+ * Never throws — returns '' on any failure. Single attempt with the feed's
+ * known proxy setting + a short timeout (it's best-effort; no direct↔proxy
+ * fallback that would double the wait inside the serialized publish loop).
  */
 export async function fetchOgImage(pageUrl: string, needsProxy = false): Promise<string> {
   let html: string
   try {
-    html = await fetchUrl(pageUrl, { proxy: needsProxy })
+    html = await fetchUrl(pageUrl, { proxy: needsProxy, timeoutSec: 8 })
   } catch {
-    if (needsProxy) return ''
-    try { html = await fetchUrl(pageUrl, { proxy: true }) } catch { return '' }
+    return ''
   }
   const head = html.slice(0, 120_000) // og tags live in <head>
-  const patterns = [
-    /<meta[^>]+(?:property|name)=["']og:image(?::url)?["'][^>]+content=["']([^"']+)["']/i,
-    /<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']og:image(?::url)?["']/i,
-    /<meta[^>]+name=["']twitter:image(?::src)?["'][^>]+content=["']([^"']+)["']/i,
-    /<meta[^>]+content=["']([^"']+)["'][^>]+name=["']twitter:image(?::src)?["']/i,
-  ]
-  for (const re of patterns) {
-    const m = head.match(re)
-    if (m) {
-      let u = decodeEntities(decodeEntities(m[1].trim()))
-      try { u = new URL(u, pageUrl).href } catch { /* keep as-is */ }
-      const c = cleanImageUrl(u)
-      if (c) return c
-    }
+  // Extract each <meta> tag with a BOUNDED scan ({0,2000}) so a malicious/buggy
+  // page full of unterminated "<meta " tokens can't cause catastrophic regex
+  // backtracking (ReDoS) and hang the single-threaded event loop.
+  for (const tag of head.match(/<meta\b[^>]{0,2000}>/gi) ?? []) {
+    if (!/\b(?:property|name)\s*=\s*["'](?:og:image(?::url)?|twitter:image(?::src)?)["']/i.test(tag)) continue
+    const m = tag.match(/\bcontent\s*=\s*["']([^"']+)["']/i)
+    if (!m) continue
+    let u = decodeEntities(decodeEntities(m[1].trim()))
+    try { u = new URL(u, pageUrl).href } catch { /* keep as-is */ }
+    const c = cleanImageUrl(u)
+    if (c) return c
   }
   return ''
 }

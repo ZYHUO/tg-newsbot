@@ -109,8 +109,14 @@ export function retentionSweep(db: Database.Database): void {
 }
 
 /** Summarize + post staged pending items, oldest first. */
-export async function publishPending(db: Database.Database): Promise<void> {
+export async function publishPending(
+  db: Database.Database,
+  feeds: FeedConfig[] = [],
+): Promise<void> {
   const now = Date.now()
+  // article-page og:image scrape should use the feed's known proxy setting,
+  // so proxy-only hosts don't burn a doomed direct fetch first
+  const proxyByFeed = new Map(feeds.map(f => [f.url, f.needsProxy ?? false]))
 
   // never post stories older than the freshness window — they expire even if
   // they were queued while the LLM/Telegram was down (no stale-news flood
@@ -130,27 +136,31 @@ export async function publishPending(db: Database.Database): Promise<void> {
     LIMIT ?
   `).all(MAX_FAILS, now, config.maxPostsPerCycle * 3) as import('./db.js').ItemRow[]
 
-  // cross-language dedup pool: Chinese titles of stories already posted in the
-  // last 48h. The fetch-time dedup compares ORIGINAL titles, which fails when
-  // the same story arrives in different languages (中文源 vs 英文源); comparing
-  // the translated 标题 catches those.
+  // cross-language dedup context: the Chinese 标题 of stories actually POSTED
+  // in the last 48h, newest first. Fed to the summarizer, which flags
+  // duplicate=true when the new item is the SAME EVENT as one of these — this
+  // catches the same story arriving in different languages/sources/wordings,
+  // which title-similarity cannot (加息 vs 降息 differ by ~1 token; two
+  // re-worded translations of one story can differ by many). Windowed on
+  // posted_at (set at claim, survives reconcile); only status='posted' counts.
   const recentZhTitles = (db.prepare(
-    `SELECT title_zh_norm FROM items WHERE title_zh_norm IS NOT NULL AND fetched_at > ?`,
+    `SELECT title_zh_norm FROM items WHERE status = 'posted' AND title_zh_norm IS NOT NULL AND posted_at > ? ORDER BY posted_at DESC LIMIT 40`,
   ).all(now - 48 * 3600 * 1000) as { title_zh_norm: string }[]).map(r => r.title_zh_norm)
 
   let posted = 0
   for (const item of candidates) {
     if (posted >= config.maxPostsPerCycle) break
 
-    const meta = item.summary_json
-      ? (JSON.parse(item.summary_json) as { excerpt?: string; image?: string })
-      : {}
+    let meta: { excerpt?: string; image?: string } = {}
+    try {
+      if (item.summary_json) meta = JSON.parse(item.summary_json)
+    } catch { /* corrupt row — treat as no excerpt/image, never abort the cycle */ }
     const excerpt = String(meta.excerpt ?? '')
     let imageUrl = String(meta.image ?? '')
 
     let s: Summary
     try {
-      s = await summarize(item.title, excerpt, item.source_name, item.category)
+      s = await summarize(item.title, excerpt, item.source_name, item.category, recentZhTitles)
     } catch (err) {
       // never post an un-summarized story; retry with backoff until MAX_FAILS
       log(`summarize FAIL #${item.id} ${item.title.slice(0, 60)}: ${(err as Error).message.slice(0, 150)}`)
@@ -159,38 +169,35 @@ export async function publishPending(db: Database.Database): Promise<void> {
         .run(fails >= MAX_FAILS ? 'failed' : 'pending', fails, Date.now() + backoffMs(fails), item.id)
       continue
     }
-    // drop: LLM flagged junk, no usable summary, or below the category's bar
+    // drop: LLM junk, cross-language duplicate, no usable summary, below the bar
     const reason = s.skip ? 'llm-skip'
+      : s.duplicate ? 'dup-llm'
       : !s.summaryZh.trim() ? 'no-summary'
       : s.importance < minImportanceFor(item.category) ? `imp<${minImportanceFor(item.category)}`
       : ''
     if (reason) {
       db.prepare(`UPDATE items SET status = 'skipped', summary_json = ? WHERE id = ?`)
         .run(JSON.stringify({ ...s, skipReason: reason }), item.id)
+      if (reason === 'dup-llm') log(`skip dup-llm #${item.id}: ${s.titleZh.slice(0, 50)}`)
       continue
     }
-    // cross-language duplicate of an already-posted story
-    const zhNorm = normalizeTitle(s.titleZh)
-    if (isFuzzyDuplicate(zhNorm, recentZhTitles)) {
-      db.prepare(`UPDATE items SET status = 'skipped', summary_json = ? WHERE id = ?`)
-        .run(JSON.stringify({ ...s, skipReason: 'dup-zh' }), item.id)
-      log(`skip dup-zh #${item.id}: ${s.titleZh.slice(0, 50)}`)
-      continue
-    }
+    const readableTitle = s.titleZh
 
     // best-effort cover image: scrape og:image when the feed gave us none.
-    // MUST run BEFORE claiming 'posting' — a crash during this 0-20s network
-    // fetch would otherwise leave the row 'posting', which reconcile marks
-    // 'posted' on restart even though the send never happened (silent drop).
+    // MUST run BEFORE claiming 'posting' — a crash during this network fetch
+    // would otherwise leave the row 'posting', which reconcile marks 'posted'
+    // on restart even though the send never happened (silent drop).
     if (!imageUrl && config.fetchOgImage) {
-      try { imageUrl = await fetchOgImage(item.url) } catch { /* no image */ }
+      try { imageUrl = await fetchOgImage(item.url, proxyByFeed.get(item.feed_url) ?? false) } catch { /* no image */ }
     }
 
     // claim the row right BEFORE the send so a crash window leaves a 'posting'
-    // marker (reconciled → posted) instead of re-sending on restart
+    // marker (reconciled → posted) instead of re-sending on restart. Record
+    // title_zh_norm + posted_at here so a crash-recovered (reconciled) post
+    // still enters the cross-language dedup pool.
     const claimed = db.prepare(
-      `UPDATE items SET status = 'posting' WHERE id = ? AND status = 'pending'`,
-    ).run(item.id).changes
+      `UPDATE items SET status = 'posting', title_zh_norm = ?, posted_at = ? WHERE id = ? AND status = 'pending'`,
+    ).run(readableTitle, Date.now(), item.id).changes
     if (claimed !== 1) continue
 
     // SEND failure domain: only errors thrown by sendToChannel may re-queue
@@ -214,9 +221,10 @@ export async function publishPending(db: Database.Database): Promise<void> {
       try {
         if (maybeSent) {
           // ambiguous delivery — prefer a possibly-missed story over a duplicate
-          db.prepare(`UPDATE items SET status = 'posted', summary_json = ?, title_zh_norm = ? WHERE id = ?`)
-            .run(JSON.stringify({ ...s, image: imageUrl || undefined, deliveryUncertain: true }), zhNorm, item.id)
-          recentZhTitles.push(zhNorm)
+          // (title_zh_norm + posted_at already set at claim time)
+          db.prepare(`UPDATE items SET status = 'posted', summary_json = ? WHERE id = ?`)
+            .run(JSON.stringify({ ...s, image: imageUrl || undefined, deliveryUncertain: true }), item.id)
+          recentZhTitles.push(readableTitle)
           posted++
         } else {
           const fails = item.fail_count + 1
@@ -235,10 +243,10 @@ export async function publishPending(db: Database.Database): Promise<void> {
     // error here must leave the row in 'posting' (reconciled → posted later),
     // never back in 'pending' where it would be re-sent.
     posted++
-    recentZhTitles.push(zhNorm)
+    recentZhTitles.push(readableTitle)
     try {
-      db.prepare(`UPDATE items SET status = 'posted', posted_msg_id = ?, summary_json = ?, title_zh_norm = ? WHERE id = ?`)
-        .run(msgId, JSON.stringify({ ...s, image: imageUrl || undefined }), zhNorm, item.id)
+      db.prepare(`UPDATE items SET status = 'posted', posted_msg_id = ?, summary_json = ? WHERE id = ?`)
+        .run(msgId, JSON.stringify({ ...s, image: imageUrl || undefined }), item.id)
       log(`posted #${item.id} [${item.category}] ${imageUrl ? '📷 ' : ''}${s.titleZh.slice(0, 60)}`)
     } catch (dbErr) {
       log(`posted #${item.id} but bookkeeping FAIL — leaving in 'posting' for reconcile: ${(dbErr as Error).message.slice(0, 150)}`)
@@ -271,5 +279,5 @@ export async function runCycle(db: Database.Database, feeds: FeedConfig[]): Prom
   // bookkeeping failure — self-heal without waiting for a restart
   reconcilePosting(db)
   retentionSweep(db)
-  await publishPending(db)
+  await publishPending(db, feeds)
 }

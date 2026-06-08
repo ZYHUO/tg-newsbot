@@ -19,8 +19,10 @@ export interface ItemRow {
   posted_msg_id: number | null
   fail_count: number
   next_retry_at: number | null
-  /** normalized Chinese title, set when posted — for cross-language dedup */
+  /** normalized Chinese title, set when claimed — for cross-language dedup */
   title_zh_norm: string | null
+  /** ms epoch the row was claimed for posting — dedup pool windows on this */
+  posted_at: number | null
 }
 
 let db: Database.Database | null = null
@@ -70,6 +72,7 @@ export function getDb(path = config.dbPath): Database.Database {
   )
   if (!itemCols.has('next_retry_at')) db.exec(`ALTER TABLE items ADD COLUMN next_retry_at INTEGER`)
   if (!itemCols.has('title_zh_norm')) db.exec(`ALTER TABLE items ADD COLUMN title_zh_norm TEXT`)
+  if (!itemCols.has('posted_at')) db.exec(`ALTER TABLE items ADD COLUMN posted_at INTEGER`)
   return db
 }
 

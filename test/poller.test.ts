@@ -43,7 +43,7 @@ function insertPending(db: Database.Database, title: string, overrides: Record<s
   })
 }
 
-const okSummary = { titleZh: '东京大地震', summaryZh: '...', skip: false, importance: 5 }
+const okSummary = { titleZh: '东京大地震', summaryZh: '...', skip: false, importance: 5, duplicate: false }
 
 beforeEach(() => vi.clearAllMocks())
 
@@ -112,9 +112,9 @@ describe('publishPending failure handling', () => {
     insertPending(db, 'good world item', { category: 'world' })
     mockSend.mockResolvedValue(1)
     mockSummarize
-      .mockResolvedValueOnce({ titleZh: '空', summaryZh: '   ', skip: false, importance: 5 })
-      .mockResolvedValueOnce({ titleZh: '加密小事', summaryZh: '一些内容', skip: false, importance: 3 }) // crypto bar is 4
-      .mockResolvedValueOnce({ titleZh: '世界大事', summaryZh: '正经摘要', skip: false, importance: 3 }) // world bar is 3
+      .mockResolvedValueOnce({ titleZh: '空', summaryZh: '   ', skip: false, importance: 5, duplicate: false })
+      .mockResolvedValueOnce({ titleZh: '加密小事', summaryZh: '一些内容', skip: false, importance: 3, duplicate: false }) // crypto bar is 4
+      .mockResolvedValueOnce({ titleZh: '世界大事', summaryZh: '正经摘要', skip: false, importance: 3, duplicate: false }) // world bar is 3
 
     await publishPending(db)
     const rows = db.prepare('SELECT title, status, summary_json FROM items ORDER BY id').all() as any[]
@@ -126,22 +126,26 @@ describe('publishPending failure handling', () => {
     expect(mockSend).toHaveBeenCalledTimes(1)
   })
 
-  it('drops a cross-language duplicate by comparing translated Chinese titles', async () => {
+  it('drops a cross-language duplicate flagged by the summarizer (dup-llm)', async () => {
     const db = resetDbForTest(':memory:')
     insertPending(db, 'EN: Ledger CTO slams EU compliance costs choking Web3', { category: 'crypto', url: 'https://a/1' })
     insertPending(db, '中文：Ledger CTO 谈欧盟合规成本', { category: 'crypto', url: 'https://b/2' })
     mockSend.mockResolvedValue(1)
-    // both translate to near-identical Chinese titles
+    // first posts; the second is the SAME EVENT — the LLM (which receives the
+    // recent posted titles) flags duplicate=true
     mockSummarize
-      .mockResolvedValueOnce({ titleZh: 'Ledger CTO 称欧盟高昂合规成本正在扼杀 Web3 创新', summaryZh: 'x', skip: false, importance: 4 })
-      .mockResolvedValueOnce({ titleZh: 'Ledger CTO：欧盟高昂的合规成本正在扼杀 Web3 创新', summaryZh: 'y', skip: false, importance: 4 })
+      .mockResolvedValueOnce({ titleZh: 'Ledger CTO 称欧盟高昂合规成本正在扼杀 Web3 创新', summaryZh: 'x', skip: false, importance: 4, duplicate: false })
+      .mockResolvedValueOnce({ titleZh: 'Ledger CTO：欧盟高昂的合规成本正在扼杀 Web3 创新', summaryZh: 'y', skip: false, importance: 4, duplicate: true })
 
     await publishPending(db)
     const rows = db.prepare('SELECT status, summary_json FROM items ORDER BY id').all() as any[]
     expect(rows[0].status).toBe('posted')
     expect(rows[1].status).toBe('skipped')
-    expect(JSON.parse(rows[1].summary_json).skipReason).toBe('dup-zh')
+    expect(JSON.parse(rows[1].summary_json).skipReason).toBe('dup-llm')
     expect(mockSend).toHaveBeenCalledTimes(1) // the duplicate was NOT sent
+    // the summarizer got the first story's title as dedup context on the 2nd call
+    const secondCallArgs = mockSummarize.mock.calls[1]
+    expect(secondCallArgs[4]).toContain('Ledger CTO 称欧盟高昂合规成本正在扼杀 Web3 创新')
   })
 
   it('stale pending items expire instead of flooding after an outage', async () => {

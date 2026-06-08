@@ -83,18 +83,22 @@ export const TITLE_DUP_THRESHOLD = 0.6
 const MIN_FUZZY_TOKENS = 5
 const SHORT_TITLE_THRESHOLD = 0.9
 
-export function isFuzzyDuplicate(normTitle: string, recentNormTitles: string[]): boolean {
+export function isFuzzyDuplicate(
+  normTitle: string,
+  recentNormTitles: string[],
+  threshold: number = TITLE_DUP_THRESHOLD,
+): boolean {
   const a = tokens(normTitle)
   if (a.size === 0) return false
+  // short titles always need near-identity, never weaker than the caller's bar
+  const shortBar = Math.max(threshold, SHORT_TITLE_THRESHOLD)
   return recentNormTitles.some(t => {
     const b = tokens(t)
     if (b.size === 0) return false
     let inter = 0
     for (const x of a) if (b.has(x)) inter++
     const jaccard = inter / (a.size + b.size - inter)
-    const threshold = a.size < MIN_FUZZY_TOKENS || b.size < MIN_FUZZY_TOKENS
-      ? SHORT_TITLE_THRESHOLD
-      : TITLE_DUP_THRESHOLD
-    return jaccard >= threshold
+    const eff = a.size < MIN_FUZZY_TOKENS || b.size < MIN_FUZZY_TOKENS ? shortBar : threshold
+    return jaccard >= eff
   })
 }
