@@ -178,17 +178,20 @@ export async function publishPending(db: Database.Database): Promise<void> {
       continue
     }
 
-    // claim the row BEFORE the side effect so a crash window leaves a
-    // 'posting' marker instead of re-sending on restart
+    // best-effort cover image: scrape og:image when the feed gave us none.
+    // MUST run BEFORE claiming 'posting' — a crash during this 0-20s network
+    // fetch would otherwise leave the row 'posting', which reconcile marks
+    // 'posted' on restart even though the send never happened (silent drop).
+    if (!imageUrl && config.fetchOgImage) {
+      try { imageUrl = await fetchOgImage(item.url) } catch { /* no image */ }
+    }
+
+    // claim the row right BEFORE the send so a crash window leaves a 'posting'
+    // marker (reconciled → posted) instead of re-sending on restart
     const claimed = db.prepare(
       `UPDATE items SET status = 'posting' WHERE id = ? AND status = 'pending'`,
     ).run(item.id).changes
     if (claimed !== 1) continue
-
-    // best-effort cover image: scrape og:image when the feed gave us none
-    if (!imageUrl && config.fetchOgImage) {
-      try { imageUrl = await fetchOgImage(item.url) } catch { /* no image */ }
-    }
 
     // SEND failure domain: only errors thrown by sendToChannel may re-queue
     // the item — anything after a successful send must never revert it.
