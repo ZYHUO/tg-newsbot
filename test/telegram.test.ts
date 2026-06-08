@@ -42,14 +42,25 @@ describe('formatPost', () => {
     })
     expect(html.length).toBeLessThan(2000)
   })
-  it('compact caption mode keeps visible text under the 1024 limit', () => {
+  // Telegram counts the caption's VISIBLE text after entity parsing, in UTF-16
+  // units (href URL + HTML tags don't count). Reconstruct that and assert ≤1024.
+  const visibleUtf16 = (html: string) =>
+    html.replace(/<a href="[^"]*">/g, '').replace(/<\/?[a-z]+>/g, '')
+      .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').length
+
+  it('compact caption stays ≤1024 visible UTF-16 units (long BMP text + long source)', () => {
     const html = formatPost({
-      category: 'tech', source: 'A Very Long Source Name', titleZh: '标'.repeat(5000),
+      category: 'tech', source: 'A '.repeat(200), titleZh: '标'.repeat(5000),
       summaryZh: '要'.repeat(5000), url: 'https://e.com/' + 'p'.repeat(2000), importance: 5,
     }, { compact: true })
-    // visible length excludes the href URL (an entity, not counted by Telegram)
-    const visible = html.replace(/<a href="[^"]*">/g, '').replace(/<\/?[a-z]+>/g, '')
-    expect([...visible].length).toBeLessThan(1024)
+    expect(visibleUtf16(html)).toBeLessThanOrEqual(1024)
+  })
+  it('compact caption stays ≤1024 even with all-astral (emoji) summary', () => {
+    const html = formatPost({
+      category: 'crypto', source: '😀'.repeat(100), titleZh: '🎉'.repeat(400),
+      summaryZh: '🚀'.repeat(2000), url: 'https://e.com', importance: 5,
+    }, { compact: true })
+    expect(visibleUtf16(html)).toBeLessThanOrEqual(1024)
   })
   it('truncation never tears a surrogate pair at the cap boundary', () => {
     const html = formatPost({

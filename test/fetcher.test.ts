@@ -117,4 +117,44 @@ describe('image extraction', () => {
   it('is empty when there is no image', () => {
     expect(wrap(`<item><title>t</title><link>https://e.com/1</link><description>just text</description></item>`).imageUrl).toBe('')
   })
+  it('prefers data-src over a data: placeholder src (lazy-load)', () => {
+    expect(wrap(`<item><title>t</title><link>https://e.com/1</link>
+      <content:encoded><![CDATA[<img src="data:image/gif;base64,R0lGOD" data-src="https://cdn.e.com/real.jpg">]]></content:encoded></item>`).imageUrl)
+      .toBe('https://cdn.e.com/real.jpg')
+  })
+  it('does not let a data: src be mistaken when only plain src exists', () => {
+    expect(wrap(`<item><title>t</title><link>https://e.com/1</link>
+      <content:encoded><![CDATA[<img src="data:image/png;base64,AAAA">]]></content:encoded></item>`).imageUrl).toBe('')
+  })
+  it('reads images from the SECOND of multiple media:group elements', () => {
+    expect(wrap(`<item><title>t</title><link>https://e.com/1</link>
+      <media:group><media:content url="https://cdn/vid.mp4" type="video/mp4"/></media:group>
+      <media:group><media:content url="https://cdn/pic.jpg" medium="image"/></media:group></item>`).imageUrl)
+      .toBe('https://cdn/pic.jpg')
+  })
+  it('rejects a non-image media:thumbnail (would 400 sendPhoto)', () => {
+    expect(wrap(`<item><title>t</title><link>https://e.com/1</link>
+      <media:thumbnail url="https://cdn.e.com/page.html"/></item>`).imageUrl).toBe('')
+  })
+  it('keeps legit filenames that merely contain pixel/track/spacer substrings', () => {
+    for (const name of ['track-and-field', 'spacerville-news', 'photo-1x1ratio', 'pixelated-art']) {
+      expect(wrap(`<item><title>t</title><link>https://e.com/1</link>
+        <enclosure url="https://cdn.e.com/${name}.jpg" type="image/jpeg"/></item>`).imageUrl)
+        .toBe(`https://cdn.e.com/${name}.jpg`)
+    }
+  })
+  it('still rejects real tracking pixels by path segment', () => {
+    expect(wrap(`<item><title>t</title><link>https://e.com/1</link>
+      <enclosure url="https://stats.e.com/track/open.png" type="image/png"/></item>`).imageUrl).toBe('')
+  })
+  it('a malformed numeric entity does NOT drop the whole feed', () => {
+    const items = parseFeed(`<?xml version="1.0"?><rss version="2.0"><channel><title>D</title>
+      <item><title>good one</title><link>https://e.com/1</link></item>
+      <item><title>bad &#1114112; entity</title><link>https://e.com/2</link>
+        <enclosure url="https://cdn/x.jpg?a=1&#x110000;b" type="image/jpeg"/></item>
+      <item><title>third</title><link>https://e.com/3</link></item>
+    </channel></rss>`)
+    expect(items).toHaveLength(3)
+    expect(items.map(i => i.url)).toContain('https://e.com/3')
+  })
 })

@@ -70,10 +70,21 @@ const NAMED_ENTITIES: Record<string, string> = {
   ldquo: '“', rdquo: '”', lsquo: '‘', rsquo: '’', mdash: '—', ndash: '–', hellip: '…',
 }
 
+/** String.fromCodePoint throws RangeError on cp > 0x10FFFF — never let a
+ *  malformed entity in one item crash the parse of the whole feed. */
+function safeFromCodePoint(cp: number, original: string): string {
+  if (!Number.isInteger(cp) || cp < 0 || cp > 0x10ffff) return original
+  try {
+    return String.fromCodePoint(cp)
+  } catch {
+    return original
+  }
+}
+
 function decodeEntities(s: string): string {
   return s
-    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
-    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
+    .replace(/&#x([0-9a-f]+);/gi, (m, h) => safeFromCodePoint(parseInt(h, 16), m))
+    .replace(/&#(\d+);/g, (m, d) => safeFromCodePoint(Number(d), m))
     .replace(/&([a-z]+);/gi, (m, name) => NAMED_ENTITIES[name.toLowerCase()] ?? m)
 }
 
@@ -98,17 +109,36 @@ function cleanImageUrl(raw: string): string {
   if (!u) return ''
   if (u.startsWith('//')) u = 'https:' + u
   if (!/^https?:\/\//i.test(u)) return '' // drop relative/data: URLs
-  // skip tracking pixels and animated/junk formats Telegram renders poorly
-  if (/(feedburner|doubleclick|googlesyndication|google-analytics|\/pixel|\/track|\/beacon|1x1|spacer)/i.test(u)) return ''
+  // tracking ad/analytics hosts
+  if (/(feedburner|doubleclick|googlesyndication|google-analytics)/i.test(u)) return ''
+  // pixel/track/beacon/spacer as a WHOLE path segment or filename stem only, so
+  // legit names survive ("track-and-field.jpg", "spacerville-news.jpg")
+  if (/\/(pixel|beacon|spacer|track|tracking)(\/|\.|$)/i.test(u)) return ''
+  if (/[/_.-]1x1([/_.-]|$)/i.test(u)) return ''
   if (/\.(gif|svg)(\?|#|$)/i.test(u)) return ''
   return u
 }
 
+/** non-image file extensions that should never be sent as a photo */
+const NON_IMAGE_EXT = /\.(html?|php|aspx?|jsp|xml|json|mp4|webm|m3u8|mp3|pdf|zip)(\?|#|$)/i
+const IMAGE_EXT = /\.(jpe?g|png|webp)(\?|#|$)/i
+
 function imgFromBody(body: string): string {
   // body may be escaped HTML (processEntities:false) or real HTML (CDATA)
   const html = decodeEntities(decodeEntities(body))
-  const m = html.match(/<img\b[^>]*?\bsrc\s*=\s*["']([^"']+)["']/i)
-  return m ? cleanImageUrl(m[1]) : ''
+  // try real lazy-load attributes BEFORE plain src (which is often a
+  // data:/placeholder), then a plain src that isn't itself a data-* attr
+  for (const re of [
+    /<img\b[^>]*?\bdata-(?:src|original|lazy-src|lazy)\s*=\s*["']([^"']+)["']/i,
+    /<img\b[^>]*?(?<![-\w])src\s*=\s*["']([^"']+)["']/i,
+  ]) {
+    const m = html.match(re)
+    if (m) {
+      const c = cleanImageUrl(m[1])
+      if (c) return c
+    }
+  }
+  return ''
 }
 
 /** Extract the best image URL from a feed entry node. */
@@ -125,8 +155,10 @@ function pickImage(node: Record<string, unknown>): string {
       }
     }
   }
-  // <media:content medium="image"/> and <media:thumbnail/> (incl. inside <media:group>)
-  const mediaHosts = [node, node['media:group']].filter(Boolean) as Record<string, unknown>[]
+  // <media:content medium="image"/> and <media:thumbnail/> (incl. inside one
+  // or more <media:group> wrappers — fast-xml-parser yields an array if >1)
+  const groups = asArray(node['media:group'] as unknown).filter(g => g && typeof g === 'object')
+  const mediaHosts = [node, ...groups] as Record<string, unknown>[]
   for (const host of mediaHosts) {
     for (const field of ['media:content', 'media:thumbnail']) {
       for (const m of asArray(host[field] as unknown)) {
@@ -135,8 +167,11 @@ function pickImage(node: Record<string, unknown>): string {
           const medium = (o['@_medium'] ?? '').toLowerCase()
           const type = (o['@_type'] ?? '').toLowerCase()
           const u = o['@_url'] ?? ''
-          if (u && (field === 'media:thumbnail' || medium === 'image' || type.startsWith('image/') ||
-            /\.(jpe?g|png|webp)(\?|#|$)/i.test(u))) {
+          // explicit image signal, or (for type-less thumbnails) at least not a
+          // known non-image URL — never hand sendPhoto an .html/.mp4 thumbnail
+          const imageish = medium === 'image' || type.startsWith('image/') || IMAGE_EXT.test(u)
+          const okThumb = field === 'media:thumbnail' && !NON_IMAGE_EXT.test(u)
+          if (u && (imageish || okThumb)) {
             const c = cleanImageUrl(u)
             if (c) return c
           }
@@ -171,16 +206,23 @@ export function parseFeed(xml: string): RawItem[] {
   const items: RawItem[] = []
 
   const push = (node: Record<string, unknown>, url: string, title: string, date: string, body: string) => {
-    url = url.trim()
-    title = stripHtml(title)
-    if (!url || !title) return
-    items.push({
-      url,
-      title,
-      publishedAt: parseDate(date),
-      excerpt: stripHtml(body).slice(0, 800),
-      imageUrl: pickImage(node),
-    })
+    try {
+      url = url.trim()
+      title = stripHtml(title)
+      if (!url || !title) return
+      // image extraction is best-effort; never let it drop the story
+      let imageUrl = ''
+      try { imageUrl = pickImage(node) } catch { /* no image */ }
+      items.push({
+        url,
+        title,
+        publishedAt: parseDate(date),
+        excerpt: stripHtml(body).slice(0, 800),
+        imageUrl,
+      })
+    } catch {
+      // one malformed entry must never drop the rest of the feed
+    }
   }
 
   if (doc.rss?.channel) {

@@ -32,21 +32,46 @@ export interface PostInput {
   importance: number
 }
 
+const cp = (s: string, n: number) => [...s].slice(0, n).join('')
+
+/** trim a string so its UTF-16 length ≤ max, never splitting a surrogate pair */
+function trimToUtf16(s: string, max: number): string {
+  if (s.length <= max) return s
+  let out = ''
+  for (const ch of s) {
+    if (out.length + ch.length > max) break
+    out += ch
+  }
+  return out
+}
+
 /**
  * Render a post as Telegram HTML.
  * - default: sized for sendMessage (4096 limit)
- * - compact: sized for a sendPhoto caption (1024 limit) — shorter summary
+ * - compact: sized for a sendPhoto caption — Telegram counts the caption's
+ *   VISIBLE text (after entity parsing) in UTF-16 units, max 1024; HTML tags
+ *   and the href URL don't count. We budget the summary against that so the
+ *   caption can't structurally exceed it (even all-emoji / long source).
  */
 export function formatPost(opts: PostInput, { compact = false } = {}): string {
   const c = CATEGORY_TAG[opts.category] ?? { emoji: '📰', tag: '#资讯' }
   const flash = opts.importance >= 5 ? '⚡️ ' : ''
-  // slice on code points so an emoji at the boundary can't be torn in half.
-  // compact budgets keep header+title+summary+link well under 1024 visible
-  // chars (the href URL is an entity and does not count toward the limit).
-  const title = [...opts.titleZh].slice(0, compact ? 200 : 300).join('')
-  const summary = [...opts.summaryZh].slice(0, compact ? 600 : 900).join('')
+  const source = compact ? cp(opts.source, 80) : opts.source
+  const title = cp(opts.titleZh, compact ? 200 : 300)
+  let summary = cp(opts.summaryZh, compact ? 600 : 900)
+
+  if (compact && summary) {
+    // visible text Telegram measures = pieces below WITHOUT html tags/href
+    const visibleLen = (sum: string) =>
+      (`${c.emoji} ${c.tag} | ${source}\n\n${flash}${title}` +
+        (sum ? `\n\n${sum}` : '') + `\n\n🔗 原文链接`).length
+    if (visibleLen(summary) > 1000) {
+      summary = trimToUtf16(summary, Math.max(0, summary.length - (visibleLen(summary) - 1000)))
+    }
+  }
+
   const lines = [
-    `${c.emoji} ${c.tag} | ${escapeHtml(opts.source)}`,
+    `${c.emoji} ${c.tag} | ${escapeHtml(source)}`,
     '',
     `${flash}<b>${escapeHtml(title)}</b>`,
   ]
@@ -140,6 +165,11 @@ async function callTg(method: string, payload: Record<string, unknown>): Promise
  * the photo (can't fetch it, bad format, caption too long — any definite 4xx),
  * falls back to a plain text message so the story is never dropped. Plain
  * text messages have the link preview disabled.
+ *
+ * Note: if sendPhoto exhausts its 429 retries it is treated as a definite
+ * rejection and the story posts as text (image dropped, story kept). This is
+ * intentional — a 429 means no message was created, so the text fallback can't
+ * duplicate. Rare given low feed volume + pacing.
  */
 export async function sendToChannel(
   text: string,
