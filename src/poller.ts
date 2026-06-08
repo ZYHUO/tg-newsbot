@@ -212,7 +212,7 @@ export async function publishPending(db: Database.Database): Promise<void> {
         if (maybeSent) {
           // ambiguous delivery — prefer a possibly-missed story over a duplicate
           db.prepare(`UPDATE items SET status = 'posted', summary_json = ?, title_zh_norm = ? WHERE id = ?`)
-            .run(JSON.stringify({ ...s, deliveryUncertain: true }), zhNorm, item.id)
+            .run(JSON.stringify({ ...s, image: imageUrl || undefined, deliveryUncertain: true }), zhNorm, item.id)
           recentZhTitles.push(zhNorm)
           posted++
         } else {
@@ -235,8 +235,8 @@ export async function publishPending(db: Database.Database): Promise<void> {
     recentZhTitles.push(zhNorm)
     try {
       db.prepare(`UPDATE items SET status = 'posted', posted_msg_id = ?, summary_json = ?, title_zh_norm = ? WHERE id = ?`)
-        .run(msgId, JSON.stringify(s), zhNorm, item.id)
-      log(`posted #${item.id} [${item.category}] ${s.titleZh.slice(0, 60)}`)
+        .run(msgId, JSON.stringify({ ...s, image: imageUrl || undefined }), zhNorm, item.id)
+      log(`posted #${item.id} [${item.category}] ${imageUrl ? '📷 ' : ''}${s.titleZh.slice(0, 60)}`)
     } catch (dbErr) {
       log(`posted #${item.id} but bookkeeping FAIL — leaving in 'posting' for reconcile: ${(dbErr as Error).message.slice(0, 150)}`)
     }
