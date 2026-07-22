@@ -5,11 +5,13 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/root/tg-newsbot
-ExecStart=/root/.hermes/node/bin/node /root/tg-newsbot/dist/index.js
+WorkingDirectory=/opt/tg-newsbot
+ExecStart=/usr/bin/node /opt/tg-newsbot/dist/index.js
 Restart=always
 RestartSec=15
 Environment=NODE_ENV=production
+# Load secrets from .env in WorkingDirectory (BOT_TOKEN, LLM_*, etc.)
+# The app reads dotenv itself; keep secrets out of this unit file.
 # tz-less feed dates parse deterministically as UTC
 Environment=TZ=UTC
 # allow the graceful-shutdown waiter (max 30s) to finish before SIGKILL
