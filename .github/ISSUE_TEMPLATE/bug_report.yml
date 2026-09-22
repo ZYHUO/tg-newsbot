@@ -1,0 +1,49 @@
+name: Bug report
+description: Something isn't behaving the way it should
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Redact bot tokens and API keys before pasting logs.
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Which stage misbehaves
+      options:
+        - Fetching (source not read)
+        - Dedupe (duplicates getting through / real items dropped)
+        - Summarise (bad or empty summary)
+        - Publishing (wrong channel, ordering, formatting)
+        - Seeding (historical flood on new source)
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+    validations:
+      required: true
+  - type: input
+    id: feed
+    attributes:
+      label: Which feed, if it's source-specific
+    validations:
+      required: false
+  - type: textarea
+    id: want
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What actually happened
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      render: shell
